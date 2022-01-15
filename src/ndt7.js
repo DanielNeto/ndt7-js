@@ -49,67 +49,34 @@
       throw new Error(err);
     };
 
-    /**
-     * discoverServerURLs contacts a web service (likely the Measurement Lab
-     * locate service, but not necessarily) and gets URLs with access tokens in
-     * them for the client. It can be short-circuted if config.server exists,
-     * which is useful for clients served from the webserver of an NDT server.
-     *
-     * @param {Object} config - An associative array of configuration options.
-     * @param {Object} userCallbacks - An associative array of user callbacks.
-     *
-     * It uses the callback functions `error`, `serverDiscovery`, and
-     * `serverChosen`.
-     *
-     * @name ndt7.discoverServerURLS
-     * @public
-     */
-    async function discoverServerURLs(config, userCallbacks) {
-      const callbacks = {
-        error: cb('error', userCallbacks, defaultErrCallback),
-        serverDiscovery: cb('serverDiscovery', userCallbacks),
-        serverChosen: cb('serverChosen', userCallbacks),
-      };
-      let protocol = 'wss';
-      if (config && ('protocol' in config)) {
-        protocol = config.protocol;
-      }
+    const getServerURLs = function(state) {
 
-      // If a server was specified, use it.
-      if (config && ('server' in config)) {
-        return {
-          '///ndt/v7/download': protocol + '://' + config.server + '/ndt/v7/download',
-          '///ndt/v7/upload': protocol + '://' + config.server + '/ndt/v7/upload',
-        };
-      }
-
-      // If no server was specified then use a loadbalancer. If no loadbalancer
-      // is specified, use the locate service from Measurement Lab.
-      const lbURL = (config && ('loadbalancer' in config)) ? config.loadbalancer : new URL('https://locate.measurementlab.net/v2/nearest/ndt/ndt7');
-      callbacks.serverDiscovery({loadbalancer: lbURL});
-      const response = await fetch(lbURL).catch((err) => {
-        throw new Error(err);
-      });
-      const js = await response.json();
-      if (! ('results' in js) ) {
-        callbacks.error(`Could not understand response from ${lbURL}: ${js}`);
-        return {};
-      }
-
-      // TODO: do not discard unused results. If the first server is unavailable
-      // the client should quickly try the next server.
-      //
-      // Choose the first result sent by the load balancer. This ensures that
-      // in cases where we have a single pod in a metro, that pod is used to
-      // run the measurement. When there are multiple pods in the same metro,
-      // they are randomized by the load balancer already.
-      const choice = js.results[0];
-      callbacks.serverChosen(choice);
+      const protocol = 'wss://';
+      const domain = '.medidor.rnp.br';
+      const port = ':4443';
+      const pathBase = '/ndt/v7/';
+      const statename = new String(state);
 
       return {
-        '///ndt/v7/download': choice.urls[protocol + ':///ndt/v7/download'],
-        '///ndt/v7/upload': choice.urls[protocol + ':///ndt/v7/upload'],
+        'download': protocol + statename.toLowerCase() + domain + port + pathBase + 'download',
+        'upload': protocol + statename.toLowerCase() + domain + port + pathBase + 'upload'
       };
+    }
+
+    const getAverage = function(numbers) {
+      let sum = 0;
+      for (let i = 0; i < numbers.length; i++) {
+        sum += numbers[i];
+      }
+      return (sum / numbers.length);
+    }
+
+    const calculateJitter = function(rtts) {
+      let variances = [];
+      for (let i = 1; i < rtts.length; i++) {
+        variances.push(Math.abs(rtts[i] - rtts[i - 1]));
+      }
+      return getAverage(variances);
     }
 
     /*
@@ -120,25 +87,11 @@
      *
      * @private
      */
-    const runNDT7Worker = async function(
-        config, callbacks, urlPromise, filename, testType) {
-      if (config.userAcceptedDataPolicy !== true &&
-          config.mlabDataPolicyInapplicable !== true) {
-        callbacks.error('The M-Lab data policy is applicable and the user ' +
-                        'has not explicitly accepted that data policy.');
-        return 1;
-      }
-
-      let clientMeasurement;
-      let serverMeasurement;
-
-      // Sometimes things like __dirname will exist even in browser environments
-      // instead check for well known node.js only environment markers
-      if (typeof process !== 'undefined' &&
-                 process.versions != null &&
-                 process.versions.node != null) {
-        filename = __dirname + '/' + filename;
-      }
+    const runNDT7Worker = async function(callbacks, urls, filename, testType) {
+      
+      let lastClientMeasurement;
+      let lastServerMeasurement;
+      const rtts = [];
 
       // This makes the worker. The worker won't actually start until it
       // receives a message.
@@ -149,14 +102,15 @@
       // non-zero for failure.
       const workerPromise = new Promise((resolve) => {
         worker.resolve = function(returnCode) {
-          if (returnCode == 0) {
-            callbacks.complete({
-              LastClientMeasurement: clientMeasurement,
-              LastServerMeasurement: serverMeasurement,
-            });
-          }
           worker.terminate();
-          resolve(returnCode);
+          if (returnCode == 0) {
+            lastServerMeasurement.AllRTTs = rtts;
+          }
+          resolve({
+            returnCode: returnCode,
+            client: lastClientMeasurement,
+            server: lastServerMeasurement
+          });
         };
       });
 
@@ -170,43 +124,41 @@
       // execution.  The MsgTpe of `ev` determines which callback the message
       // gets forwarded to.
       worker.onmessage = function(ev) {
+
         if (!ev.data || !ev.data.MsgType || ev.data.MsgType === 'error') {
+          
           clearTimeout(workerTimeout);
           worker.resolve(1);
-          const msg = (!ev.data) ? `${testType} error` : ev.data.Error;
-          callbacks.error(msg);
-        } else if (ev.data.MsgType === 'start') {
-          callbacks.start(ev.data.Data);
+          const message = (!ev.data) ? `${testType} error` : ev.data.Error;
+          callbacks.error(message);
+
         } else if (ev.data.MsgType == 'measurement') {
           // For performance reasons, we parse the JSON outside of the thread
           // doing the downloading or uploading.
           if (ev.data.Source == 'server') {
-            serverMeasurement = JSON.parse(ev.data.ServerMessage);
-            callbacks.measurement({
+            lastServerMeasurement = ev.data.ServerData;
+            rtts.push(ev.data.ServerData.TCPInfo.RTT);
+            /*callbacks.measurement({
               Source: ev.data.Source,
-              Data: serverMeasurement,
-            });
+              Data: ev.data.ServerData,
+            });*/
           } else {
-            clientMeasurement = ev.data.ClientData;
+            lastClientMeasurement = ev.data.ClientData;
             callbacks.measurement({
-              Source: ev.data.Source,
-              Data: ev.data.ClientData,
+              Data: ev.data.ClientData
             });
           }
-        } else if (ev.data.MsgType == 'complete') {
+        } else if (ev.data.MsgType == 'closed') {
           clearTimeout(workerTimeout);
-          worker.resolve(0);
+          if (ev.data.code == 1006) {
+            worker.resolve(1);
+            const message = "The connection was closed abnormally, or could not be opened properly";
+            callbacks.error(message);
+          } else {
+            worker.resolve(0);
+          }
         }
       };
-
-      // We can't start the worker until we know the right server, so we wait
-      // here to find that out.
-      const urls = await urlPromise.catch((err) => {
-        // Clear timer, terminate the worker and rethrow the error.
-        clearTimeout(workerTimeout);
-        worker.resolve(2);
-        throw err;
-      });
 
       // Start the worker.
       worker.postMessage(urls);
@@ -230,23 +182,17 @@
      * @name ndt7.downloadTest
      * @public
      */
-    async function downloadTest(config, userCallbacks, urlPromise) {
+    async function downloadTest(userCallbacks, urls, workerfile) {
       const callbacks = {
         error: cb('error', userCallbacks, defaultErrCallback),
-        start: cb('downloadStart', userCallbacks),
-        measurement: cb('downloadMeasurement', userCallbacks),
-        complete: cb('downloadComplete', userCallbacks),
+        measurement: cb('downloadMeasurement', userCallbacks)
       };
-      const workerfile = config.downloadworkerfile || 'ndt7-download-worker.js';
-      return await runNDT7Worker(
-          config, callbacks, urlPromise, workerfile, 'download')
-          .catch((err) => {
-            callbacks.error(err);
-          });
+      return await runNDT7Worker(callbacks, urls, workerfile, 'download')
+          .catch((err) => { callbacks.error(err); });
     }
 
     /**
-     * uploadTest runs just the NDT7 download test.
+     * uploadTest runs just the NDT7 upload test.
      * @param {Object} config - An associative array of configuration strings
      * @param {Object} userCallbacks
      * @param {Object} urlPromise - A promise that will resolve to urls.
@@ -256,20 +202,13 @@
      * @name ndt7.uploadTest
      * @public
      */
-    async function uploadTest(config, userCallbacks, urlPromise) {
+    async function uploadTest(userCallbacks, urls, workerfile) {
       const callbacks = {
         error: cb('error', userCallbacks, defaultErrCallback),
-        start: cb('uploadStart', userCallbacks),
-        measurement: cb('uploadMeasurement', userCallbacks),
-        complete: cb('uploadComplete', userCallbacks),
+        measurement: cb('uploadMeasurement', userCallbacks)
       };
-      const workerfile = config.uploadworkerfile || 'ndt7-upload-worker.js';
-      const rv = await runNDT7Worker(
-          config, callbacks, urlPromise, workerfile, 'upload')
-          .catch((err) => {
-            callbacks.error(err);
-          });
-      return rv << 4;
+      return await runNDT7Worker(callbacks, urls, workerfile, 'upload')
+          .catch((err) => { callbacks.error(err); });
     }
 
     /**
@@ -285,18 +224,47 @@
      * @public
      */
     async function test(config, userCallbacks) {
-      // Starts the asynchronous process of server discovery, allowing other
-      // stuff to proceed in the background.
-      const urlPromise = discoverServerURLs(config, userCallbacks);
-      const downloadSuccess = await downloadTest(
-          config, userCallbacks, urlPromise);
-      const uploadSuccess = await uploadTest(
-          config, userCallbacks, urlPromise);
-      return downloadSuccess + uploadSuccess;
+
+      const startTime = new Date().toLocaleString('pt-BR') + " (UTC-3)";
+      const urls = getServerURLs((config && ('state' in config)) ? config.state : 'rj'); // using rj as default
+
+      let downloadWorkerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
+      downloadWorkerFile += 'ndt7-download-worker.js';
+      const downloadResults = await downloadTest(userCallbacks, urls, downloadWorkerFile);
+
+      let results = {};
+      results.horario = startTime;
+      if (downloadResults.returnCode != 0) {
+        return downloadResults.returnCode;
+      } else {
+        results.banda_download = ((downloadResults.client.NumBytes * 8) / downloadResults.client.ElapsedTime) / 1000000; //from bps to Mbps
+        results.retransmissao = (downloadResults.server.TCPInfo.BytesRetrans / downloadResults.server.TCPInfo.BytesSent) * 100; //in %
+        results.ip_cliente = downloadResults.server.ConnectionInfo.Client.split(':')[0];
+        results.ip_servidor = downloadResults.server.ConnectionInfo.Server.split(':')[0] + " (" + urls['download'].split("/")[2].split(":")[0] + ")";
+      }
+
+      let uploadWorkerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
+      uploadWorkerFile += 'ndt7-upload-worker.js';
+      const uploadResults = await uploadTest(userCallbacks, urls, uploadWorkerFile);
+
+      if (uploadResults.returnCode != 0) {
+        return downloadResults.returnCode + (uploadResults.returnCode << 4);
+      } else {
+        results.banda_upload = (uploadResults.server.TCPInfo.BytesReceived * 8) / uploadResults.server.TCPInfo.ElapsedTime;
+      }
+      const allRTTs = downloadResults.server.AllRTTs.concat(uploadResults.server.AllRTTs);
+      results.rtt = getAverage(allRTTs) / 1000; //from us to ms
+      results.jitter = calculateJitter(allRTTs) / 1000; //from us to ms
+
+      const final = cb('finalMeasurements', userCallbacks);
+      final({
+        results: results
+      });
+
+      return downloadResults.returnCode + (uploadResults.returnCode << 4);
     }
 
     return {
-      discoverServerURLs: discoverServerURLs,
       downloadTest: downloadTest,
       uploadTest: uploadTest,
       test: test,

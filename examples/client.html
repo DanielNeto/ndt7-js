@@ -6,59 +6,42 @@
 </head>
 
 <body>
-    <div id="server"></div>
     <div id="download"></div>
     <div id="upload"></div>
+    <div id="latency"></div>
+    <div id="jitter"></div>
+    <div id="retransmissoes"></div>
+    <div id="ipcliente"></div>
+    <div id="ipservidor"></div>
+    <div id="horario"></div>
     <script type="text/javascript">
         ndt7.test(
             {
-                userAcceptedDataPolicy: true,
-                downloadworkerfile: "../src/ndt7-download-worker.min.js",
-                uploadworkerfile: "../src/ndt7-upload-worker.min.js",
+                state: "SP",
+                libraryPath: "../src/"
             },
             {
-                serverChosen: function (server) {
-                    console.log('Testing to:', {
-                        machine: server.machine,
-                        locations: server.location,
-                    });
-                    document.getElementById('server').innerHTML = 'Testing to: ' + server.machine + ' (' + server.location.city + ')';
+                finalMeasurements: function (data) {
+                    //console.log(data);
+                    document.getElementById('download').innerHTML = 'Download: ' + data.results.banda_download.toFixed(2) + ' Mb/s';
+                    document.getElementById('upload').innerHTML = 'Upload: ' + data.results.banda_upload.toFixed(2) + ' Mb/s';
+                    document.getElementById('latency').innerHTML = 'Latência: ' + data.results.rtt.toFixed(2) + ' ms';
+                    document.getElementById('jitter').innerHTML = 'Jitter: ' + data.results.jitter.toFixed(2) + ' ms';
+                    document.getElementById('retransmissoes').innerHTML = 'Retransmissões: ' + data.results.retransmissao.toFixed(2) + ' %';
+                    document.getElementById('ipcliente').innerHTML = 'IP cliente: ' + data.results.ip_cliente;
+                    document.getElementById('ipservidor').innerHTML = 'IP servidor: ' + data.results.ip_servidor;
+                    document.getElementById('horario').innerHTML = 'Hora do teste: ' + data.results.horario;
                 },
                 downloadMeasurement: function (data) {
-                    if (data.Source === 'client') {
-                        document.getElementById('download').innerHTML = 'Download: ' + data.Data.MeanClientMbps.toFixed(2) + ' Mb/s';
-                    }
-                },
-                downloadComplete: function (data) {
-                    // (bytes/second) * (bits/byte) / (megabits/bit) = Mbps
-                    const serverBw = data.LastServerMeasurement.BBRInfo.BW * 8 / 1000000;
-                    const clientGoodput = data.LastClientMeasurement.MeanClientMbps;
-                    console.log(
-                        `Download test is complete:
-    Instantaneous server bottleneck bandwidth estimate: ${serverBw} Mbps
-    Mean client goodput: ${clientGoodput} Mbps`);
-                    document.getElementById('download').innerHTML = 'Download: ' + clientGoodput.toFixed(2) + ' Mb/s';
+                    //console.log(data);
+                    document.getElementById('download').innerHTML = 'Download: ' + data.Data.MeanClientMbps.toFixed(2) + ' Mb/s';
                 },
                 uploadMeasurement: function (data) {
-                    if (data.Source === 'server') {
-                        document.getElementById('upload').innerHTML = 'Upload: ' + (data.Data.TCPInfo.BytesReceived /
-                            data.Data.TCPInfo.ElapsedTime * 8).toFixed(2) + ' Mb/s';;
-                    }
-                },
-                uploadComplete: function (data) {
-                    // TODO: used actual upload duration for rate calculation.
-                    // bytes * (bits/byte() * (megabits/bit) * (1/seconds) = Mbps
-                    const serverBw =
-                        data.LastServerMeasurement.TCPInfo.BytesReceived * 8 / 1000000 / 10;
-                    const clientGoodput = data.LastClientMeasurement.MeanClientMbps;
-                    console.log(
-                        `Upload test is complete:
-    Mean server throughput: ${serverBw} Mbps
-    Mean client goodput: ${clientGoodput} Mbps`);
-                    document.getElementById('upload').innerHTML = 'Upload: ' + clientGoodput.toFixed(2) + ' Mb/s';
+                    document.getElementById('upload').innerHTML = 'Upload: ' + data.Data.MeanClientMbps.toFixed(2) + ' Mb/s';
+                    //console.log(data);
                 },
                 error: function (err) {
-                    console.log('Error while running the test:', err.message);
+                    console.log('Error while running the test:', err);
                 },
             },
         ).then((exitcode) => {

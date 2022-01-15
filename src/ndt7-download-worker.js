@@ -8,7 +8,7 @@ if (typeof WebSocket === 'undefined') {
 // workerMain is the WebWorker function that runs the ndt7 download test.
 const workerMain = function(ev) {
   'use strict';
-  const url = ev.data['///ndt/v7/download'];
+  const url = ev.data['download'];
   const sock = new WebSocket(url, 'net.measurementlab.ndt.v7');
   let now = () => new Date().getTime();
   if (typeof performance !== 'undefined' &&
@@ -28,17 +28,16 @@ const workerMain = function(ev) {
  * @param {function} now - A function returning a time in milliseconds.
  */
 const downloadTest = function(sock, postMessage, now) {
-  sock.onclose = function() {
+  sock.onclose = function(ev) {
+    console.log(ev);
     postMessage({
-      MsgType: 'complete',
+      MsgType: 'closed',
+      code: ev.code
     });
   };
 
   sock.onerror = function(ev) {
-    postMessage({
-      MsgType: 'error',
-      Error: ev,
-    });
+    console.log(ev); //this is useless, using close event instead
   };
 
   let start = now();
@@ -49,43 +48,37 @@ const downloadTest = function(sock, postMessage, now) {
     start = now();
     previous = start;
     total = 0;
-    postMessage({
-      MsgType: 'start',
-      Data: {
-        ClientStartTime: start,
-      },
-    });
   };
 
   sock.onmessage = function(ev) {
-    total +=
-        (typeof ev.data.size !== 'undefined') ? ev.data.size : ev.data.length;
+    total += (typeof ev.data.size !== 'undefined') ? ev.data.size : ev.data.length;
     // Perform a client-side measurement 4 times per second.
-    const t = now();
+    const currentTime = now();
     const every = 250; // ms
-    if (t - previous > every) {
+    if ((currentTime - previous) > every) {
       postMessage({
         MsgType: 'measurement',
         ClientData: {
-          ElapsedTime: (t - start) / 1000, // seconds
+          ElapsedTime: (currentTime - start) / 1000, // seconds
           NumBytes: total,
           // MeanClientMbps is calculated via the logic:
           //  (bytes) * (bits / byte) * (megabits / bit) = Megabits
           //  (Megabits) * (1/milliseconds) * (milliseconds / second) = Mbps
           // Collect the conversion constants, we find it is 8*1000/1000000
           // When we simplify we get: 8*1000/1000000 = .008
-          MeanClientMbps: (total / (t - start)) * 0.008,
+          MeanClientMbps: (total / (currentTime - start)) * 0.008
         },
         Source: 'client',
+        Test: 'download'
       });
-      previous = t;
+      previous = currentTime;
     }
 
     // Pass along every server-side measurement.
     if (typeof ev.data === 'string') {
       postMessage({
         MsgType: 'measurement',
-        ServerMessage: ev.data,
+        ServerData: JSON.parse(ev.data),
         Source: 'server',
       });
     }
