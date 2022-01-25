@@ -55,4 +55,9 @@ test executa o teste de download seguido pelo teste de upload.
 | config | <code>Object</code> | Uma matriz associativa de strings de configuração |
 | userCallbacks | <code>Object</code> |  |
 
+## Config : <code>object</code>
 
+| Param | Type | Description |
+| --- | --- | --- |
+| state | <code>String</code> | Estado (UF) do servidor a ser usado nos testes. |
+| libraryPath | <code>String</code> | Path relativo das bibliotecas Javascript. |
