@@ -89,6 +89,7 @@
      */
     const runNDT7Worker = async function(callbacks, urls, filename, testType) {
       
+      const startTime = new Date().toLocaleString('pt-BR') + " (UTC-3)";
       let lastClientMeasurement;
       let lastServerMeasurement;
       const rtts = [];
@@ -102,14 +103,31 @@
       // non-zero for failure.
       const workerPromise = new Promise((resolve) => {
         worker.resolve = function(returnCode) {
+          
           worker.terminate();
+          let results = {};
+
           if (returnCode == 0) {
-            lastServerMeasurement.AllRTTs = rtts;
+            if (testType == 'download') {
+              results.banda_download = ((lastClientMeasurement.NumBytes * 8) / lastClientMeasurement.ElapsedTime) / 1000000; //from bps to Mbps
+            } else if (testType == 'upload') {
+              results.banda_upload = (lastServerMeasurement.TCPInfo.BytesReceived * 8) / lastServerMeasurement.TCPInfo.ElapsedTime;
+            }
+              results.horario = startTime;
+              results.retransmissao = (lastServerMeasurement.TCPInfo.BytesRetrans / lastServerMeasurement.TCPInfo.BytesSent) * 100; //in %
+              results.ip_cliente = lastServerMeasurement.ConnectionInfo.Client.split(':')[0];
+              results.ip_servidor = lastServerMeasurement.ConnectionInfo.Server.split(':')[0] + " (" + urls['download'].split("/")[2].split(":")[0] + ")";
+              results.allRTTs = rtts;
+              results.rtt = getAverage(rtts) / 1000; //from us to ms
+              results.jitter = calculateJitter(rtts) / 1000; //from us to ms
+
+              callbacks.complete({
+                results: results
+              });
           }
           resolve({
             returnCode: returnCode,
-            client: lastClientMeasurement,
-            server: lastServerMeasurement
+            results: results
           });
         };
       });
@@ -182,12 +200,16 @@
      * @name ndt7.downloadTest
      * @public
      */
-    async function downloadTest(userCallbacks, urls, workerfile) {
+    async function downloadTest(config, userCallbacks) {
       const callbacks = {
         error: cb('error', userCallbacks, defaultErrCallback),
-        measurement: cb('downloadMeasurement', userCallbacks)
+        measurement: cb('downloadMeasurement', userCallbacks),
+        complete: cb('downloadComplete', userCallbacks)
       };
-      return await runNDT7Worker(callbacks, urls, workerfile, 'download')
+      const urls = getServerURLs((config && ('state' in config)) ? config.state : 'rj'); // using rj as default
+      let workerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
+      workerFile += 'ndt7-download-worker.js';
+      return await runNDT7Worker(callbacks, urls, workerFile, 'download')
           .catch((err) => { callbacks.error(err); });
     }
 
@@ -202,12 +224,16 @@
      * @name ndt7.uploadTest
      * @public
      */
-    async function uploadTest(userCallbacks, urls, workerfile) {
+    async function uploadTest(config, userCallbacks) {
       const callbacks = {
         error: cb('error', userCallbacks, defaultErrCallback),
-        measurement: cb('uploadMeasurement', userCallbacks)
+        measurement: cb('uploadMeasurement', userCallbacks),
+        complete: cb('uploadComplete', userCallbacks)
       };
-      return await runNDT7Worker(callbacks, urls, workerfile, 'upload')
+      const urls = getServerURLs((config && ('state' in config)) ? config.state : 'rj'); // using rj as default
+      let workerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
+      workerFile += 'ndt7-upload-worker.js';
+      return await runNDT7Worker(callbacks, urls, workerFile, 'upload')
           .catch((err) => { callbacks.error(err); });
     }
 
@@ -225,34 +251,26 @@
      */
     async function test(config, userCallbacks) {
 
-      const startTime = new Date().toLocaleString('pt-BR') + " (UTC-3)";
-      const urls = getServerURLs((config && ('state' in config)) ? config.state : 'rj'); // using rj as default
-
-      let downloadWorkerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
-      downloadWorkerFile += 'ndt7-download-worker.js';
-      const downloadResults = await downloadTest(userCallbacks, urls, downloadWorkerFile);
-
-      let results = {};
-      results.horario = startTime;
+      const downloadResults = await downloadTest(config, userCallbacks);
       if (downloadResults.returnCode != 0) {
         return downloadResults.returnCode;
-      } else {
-        results.banda_download = ((downloadResults.client.NumBytes * 8) / downloadResults.client.ElapsedTime) / 1000000; //from bps to Mbps
-        results.retransmissao = (downloadResults.server.TCPInfo.BytesRetrans / downloadResults.server.TCPInfo.BytesSent) * 100; //in %
-        results.ip_cliente = downloadResults.server.ConnectionInfo.Client.split(':')[0];
-        results.ip_servidor = downloadResults.server.ConnectionInfo.Server.split(':')[0] + " (" + urls['download'].split("/")[2].split(":")[0] + ")";
       }
 
-      let uploadWorkerFile = (config && ('libraryPath' in config)) ? config.libraryPath : '';
-      uploadWorkerFile += 'ndt7-upload-worker.js';
-      const uploadResults = await uploadTest(userCallbacks, urls, uploadWorkerFile);
+      let results = {};
+      results.horario = downloadResults.results.horario;
+      results.banda_download = downloadResults.results.banda_download;
+      results.retransmissao = downloadResults.results.retransmissao;
+      results.ip_cliente = downloadResults.results.ip_cliente;
+      results.ip_servidor = downloadResults.results.ip_servidor;
 
+      const uploadResults = await uploadTest(config, userCallbacks);
       if (uploadResults.returnCode != 0) {
         return downloadResults.returnCode + (uploadResults.returnCode << 4);
-      } else {
-        results.banda_upload = (uploadResults.server.TCPInfo.BytesReceived * 8) / uploadResults.server.TCPInfo.ElapsedTime;
       }
-      const allRTTs = downloadResults.server.AllRTTs.concat(uploadResults.server.AllRTTs);
+      
+      results.banda_upload = uploadResults.results.banda_upload;
+      
+      const allRTTs = downloadResults.results.allRTTs.concat(uploadResults.results.allRTTs);
       results.rtt = getAverage(allRTTs) / 1000; //from us to ms
       results.jitter = calculateJitter(allRTTs) / 1000; //from us to ms
 

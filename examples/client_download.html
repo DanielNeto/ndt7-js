@@ -7,7 +7,6 @@
 
 <body>
     <div id="download"></div>
-    <div id="upload"></div>
     <div id="latency"></div>
     <div id="jitter"></div>
     <div id="retransmissoes"></div>
@@ -15,16 +14,15 @@
     <div id="ipservidor"></div>
     <div id="horario"></div>
     <script type="text/javascript">
-        ndt7.test(
+        ndt7.downloadTest(
             {
-                state: "SP",
+                state: "MG",
                 libraryPath: "../src/"
             },
             {
-                finalMeasurements: function (data) {
-                    //console.log(data);
+                downloadComplete: function (data) {
+                    console.log(data);
                     document.getElementById('download').innerHTML = 'Download: ' + data.results.banda_download.toFixed(2) + ' Mb/s';
-                    document.getElementById('upload').innerHTML = 'Upload: ' + data.results.banda_upload.toFixed(2) + ' Mb/s';
                     document.getElementById('latency').innerHTML = 'Latência: ' + data.results.rtt.toFixed(2) + ' ms';
                     document.getElementById('jitter').innerHTML = 'Jitter: ' + data.results.jitter.toFixed(2) + ' ms';
                     document.getElementById('retransmissoes').innerHTML = 'Retransmissões: ' + data.results.retransmissao.toFixed(2) + ' %';
@@ -36,22 +34,12 @@
                     //console.log(data);
                     document.getElementById('download').innerHTML = 'Download: ' + data.Data.MeanClientMbps.toFixed(2) + ' Mb/s';
                 },
-                downloadComplete: function (data) {
-                    console.log(data);
-                },
-                uploadMeasurement: function (data) {
-                    document.getElementById('upload').innerHTML = 'Upload: ' + data.Data.MeanClientMbps.toFixed(2) + ' Mb/s';
-                    //console.log(data);
-                },
-                uploadComplete: function (data) {
-                    console.log(data);
-                },
                 error: function (err) {
                     console.log('Error while running the test:', err);
                 },
-            },
+            }
         ).then((exitcode) => {
-            console.log("ndt7 test completed with exit code:", exitcode)
+            console.log("ndt7 test completed with exit code:", exitcode.returnCode)
         });
     </script>
 
